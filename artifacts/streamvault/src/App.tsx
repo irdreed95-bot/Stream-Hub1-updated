@@ -33,8 +33,10 @@ const queryClient = new QueryClient({
 
 function Router() {
   return (
-    <div className="flex min-h-screen w-full flex-col md:flex-row bg-[#06060a] overflow-x-hidden">
+    <div className="flex min-h-screen w-full flex-col bg-[#06060a] overflow-x-hidden">
+      {/* AdminBanner sits above the whole layout so it never joins the side-by-side flex row */}
       <AdminBanner />
+      <div className="flex flex-1 flex-col md:flex-row min-h-0">
       <Sidebar />
       <main className="flex-1 min-w-0 pb-16 md:pb-0 flex flex-col">
         <UpdateBanner />
@@ -60,6 +62,7 @@ function Router() {
       </main>
       {/* AdBanner is now a no-op overlay — ads are inline in content rows */}
       <AdBanner />
+      </div>
     </div>
   );
 }

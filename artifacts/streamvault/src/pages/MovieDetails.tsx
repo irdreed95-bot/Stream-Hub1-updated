@@ -169,30 +169,24 @@ export default function MovieDetails() {
   return (
     <div className="w-full min-h-screen bg-[#06060a]" dir={isRtl ? "rtl" : "ltr"}>
 
-      {/* Sticky header bar */}
-      <div className="sticky top-0 z-30 flex items-center justify-between gap-3 px-4 py-3 bg-[#06060a]/95 backdrop-blur border-b border-white/5">
-        <Link href="/">
-          <button className="flex items-center justify-center w-8 h-8 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 transition-colors shrink-0">
-            <BackIcon className="w-4 h-4 text-white" />
-          </button>
-        </Link>
-        <h1 className="flex-1 text-sm font-bold text-white truncate text-center">
-          {movie.title}
-        </h1>
-        {/* Landscape toggle — mobile only */}
+      {/* Video player — flush to top with controls overlaid */}
+      <div ref={playerRef} className="w-full relative">
+        {/* Back button overlaid top-left — no layout push */}
+        <div className="absolute top-3 left-3 z-30 flex items-center gap-2">
+          <Link href="/">
+            <button className="flex items-center justify-center w-8 h-8 rounded-lg bg-black/60 border border-white/20 hover:bg-black/80 transition-colors backdrop-blur-sm">
+              <BackIcon className="w-4 h-4 text-white" />
+            </button>
+          </Link>
+        </div>
+        {/* Landscape toggle overlaid top-right — mobile only */}
         <button
           onClick={handleLandscapeToggle}
-          className="md:hidden flex items-center justify-center w-8 h-8 rounded-lg bg-white/5 border border-white/10 hover:bg-primary/20 hover:border-primary/30 transition-colors shrink-0"
+          className="md:hidden absolute top-3 right-3 z-30 flex items-center justify-center w-8 h-8 rounded-lg bg-black/60 border border-white/20 hover:bg-primary/20 hover:border-primary/30 transition-colors backdrop-blur-sm"
           title={isLandscape ? "Exit fullscreen" : "Fullscreen"}
         >
           <Maximize2 className="w-4 h-4 text-white" />
         </button>
-        {/* Placeholder to balance flex on desktop */}
-        <div className="hidden md:block w-8" />
-      </div>
-
-      {/* Video player — full width at top */}
-      <div ref={playerRef} className="w-full">
         <VideoPlayer tmdbId={tmdbId} type="movie" />
       </div>
 

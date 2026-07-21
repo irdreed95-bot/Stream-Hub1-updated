@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearch, useLocation } from "wouter";
-import { searchMulti, getByGenre } from "@/services/tmdb";
+import { searchMulti, getByGenre, getPopular } from "@/services/tmdb";
 import { MovieCard } from "@/components/MovieCard";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -106,6 +106,13 @@ export default function Search() {
     enabled: !!genreFilter && debouncedQuery.length === 0,
   });
 
+  // When a type filter is active with no query/genre, load popular content for that type
+  const { data: popularData, isLoading: popularLoading } = useQuery({
+    queryKey: ["popular-browse", typeFilter],
+    queryFn: () => getPopular((typeFilter as "movie" | "tv") || "movie"),
+    enabled: !!typeFilter && !genreFilter && debouncedQuery.length === 0,
+  });
+
   let results: any[] = [];
   let isLoading = false;
 
@@ -119,13 +126,22 @@ export default function Search() {
       return true;
     });
     isLoading = searchLoading;
+  } else if (typeFilter && !genreFilter) {
+    // Browsing a type (movies or series) without a search — show popular
+    results = (popularData?.results || []).map((item: any) => ({
+      ...item,
+      media_type: typeFilter,
+    }));
+    isLoading = popularLoading;
   }
 
-  const showingResults = debouncedQuery.length > 2 || !!genreFilter;
+  // Show results grid whenever we have a type filter, active query, or active genre
+  const showingResults = debouncedQuery.length > 2 || !!genreFilter || !!typeFilter;
 
-  // Navigate to genre results — updates URL reactively
+  // Navigate to genre results — preserves the current type filter
   function handleGenreSelect(genreId: number) {
-    setLocation(`/search?type=movie&genre=${genreId}`);
+    const type = typeFilter || "movie";
+    setLocation(`/search?type=${type}&genre=${genreId}`);
   }
 
   function handleClearGenre() {
@@ -181,7 +197,9 @@ export default function Search() {
             <h2 className="text-lg font-semibold text-foreground">
               {genreFilter
                 ? (GENRES.find(g => String(g.id) === genreFilter)?.label || t("categories"))
-                : `"${debouncedQuery}"`}
+                : debouncedQuery.length > 2
+                  ? `"${debouncedQuery}"`
+                  : typeFilter === "tv" ? "المسلسلات الشائعة" : "الأفلام الشائعة"}
             </h2>
             {isLoading ? (
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">

@@ -1,0 +1,2 @@
+- [StreamVault chat architecture](streamvault-chat.md) — chat moved from localStorage to Supabase; key patterns for chatApi.ts
+- [StreamVault App.tsx layout](streamvault-layout.md) — AdminBanner must stay outside the flex-row div or it breaks on iPad

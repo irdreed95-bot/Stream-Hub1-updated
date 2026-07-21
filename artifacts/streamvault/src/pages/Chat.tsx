@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { dmsApi } from "@/services/adminApi";
+import { getRoomMessages, sendRoomMessage, mutateRoomMessages, subscribeLocal } from "@/services/chatApi";
 import { Link } from "wouter";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -343,19 +344,55 @@ export default function Chat() {
   const getMuted   = useCallback(() => loadJSON<string[]>(MUTE_KEY, []), []);
   const getBanned  = useCallback(() => loadJSON<string[]>(BAN_KEY,  []), []);
 
-  // Poll messages
+  // Ref so moderation closure always sees latest messages without stale capture
+  const messagesRef = useRef<ChatMessage[]>([]);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
+
+  // ── Supabase fetch + BroadcastChannel subscription ───────────────────────────
   useEffect(() => {
     if (!user) return;
-    const poll = () => setMessages(loadJSON<ChatMessage[]>(roomKey, []));
-    poll();
-    const id = setInterval(poll, 2000);
-    return () => clearInterval(id);
+    let cancelled = false;
+
+    // Initial load from Supabase
+    getRoomMessages(roomKey)
+      .then(msgs => { if (!cancelled) setMessages(msgs); })
+      .catch(() => {});
+
+    // Poll Supabase every 3 s for cross-device sync
+    const pollId = setInterval(() => {
+      getRoomMessages(roomKey)
+        .then(msgs => {
+          if (cancelled) return;
+          setMessages(prev => {
+            // Keep local-only bot messages that aren't yet persisted in Supabase
+            const remoteIds = new Set(msgs.map(m => m.id));
+            const botOnly = prev.filter(m => m.userId === BOT_USER.userId && !remoteIds.has(m.id));
+            return botOnly.length === 0 ? msgs : [...msgs, ...botOnly].sort((a, b) => a.timestamp - b.timestamp);
+          });
+        })
+        .catch(() => {});
+    }, 3000);
+
+    // BroadcastChannel — zero-latency cross-tab on same device
+    const unsub = subscribeLocal(
+      roomKey,
+      (msg) => {
+        if (!cancelled) setMessages(prev =>
+          prev.some(m => m.id === msg.id) ? prev : [...prev, msg].sort((a, b) => a.timestamp - b.timestamp)
+        );
+      },
+      () => {
+        if (!cancelled) getRoomMessages(roomKey).then(msgs => { if (!cancelled) setMessages(msgs); }).catch(() => {});
+      },
+    );
+
+    return () => { cancelled = true; clearInterval(pollId); unsub(); };
   }, [user, roomKey]);
 
   // Auto-scroll
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
-  // Dummy bot
+  // Dummy bot — local-only (each client shows its own bot messages; not synced to Supabase)
   useEffect(() => {
     if (!user) return;
     const post = () => {
@@ -364,52 +401,55 @@ export default function Chat() {
       if (muted.includes(BOT_USER.userId) || banned.includes(BOT_USER.email)) return;
       const pool = room === "english" ? BOT_POOL_EN : BOT_POOL_AR;
       const text = pool[Math.floor(Math.random() * pool.length)];
-      const all = loadJSON<ChatMessage[]>(roomKey, []);
-      const last = all[all.length - 1];
-      if (last?.userId === BOT_USER.userId && Date.now() - last.timestamp < 60_000) return;
-      all.push({ id: genId(), userId: BOT_USER.userId, displayName: BOT_USER.displayName, email: BOT_USER.email, text, timestamp: Date.now(), isAdmin: false });
-      saveJSON(roomKey, all);
-      setMessages([...all]);
+      setMessages(prev => {
+        const last = prev[prev.length - 1];
+        if (last?.userId === BOT_USER.userId && Date.now() - last.timestamp < 60_000) return prev;
+        const botMsg: ChatMessage = {
+          id: genId(), userId: BOT_USER.userId, displayName: BOT_USER.displayName,
+          email: BOT_USER.email, text, timestamp: Date.now(), isAdmin: false,
+        };
+        return [...prev, botMsg];
+      });
     };
     const t1 = setTimeout(post, 20_000);
     const t2 = setInterval(post, 120_000 + Math.random() * 60_000);
     return () => { clearTimeout(t1); clearInterval(t2); };
   }, [user, room, roomKey]);
 
-  // Regex + Gemini AI Auto-moderation (runs every 5s)
+  // Regex + Gemini AI Auto-moderation (runs every 5 s on current state)
   useEffect(() => {
     if (!user) return;
     const moderate = async () => {
-      const msgs = loadJSON<ChatMessage[]>(roomKey, []);
+      const msgs = messagesRef.current;
       const muted = loadJSON<string[]>(MUTE_KEY, []);
       let changed = false;
       const toGemini: ChatMessage[] = [];
 
       const updated = msgs.map(m => {
-        if (m.deleted || m.isAdmin) return m;
+        if (m.deleted || m.isAdmin || m.userId === BOT_USER.userId) return m;
         if (hasBadWord(m.text)) {
           changed = true;
           if (!muted.includes(m.userId)) { muted.push(m.userId); saveJSON(MUTE_KEY, muted); }
           return { ...m, deleted: true };
         }
-        // Flag for Gemini check if not obviously bad
         if (!m.deleted && m.text) toGemini.push(m);
         return m;
       });
 
-      if (changed) { saveJSON(roomKey, updated); setMessages([...updated]); }
+      if (changed) {
+        setMessages(updated);
+        mutateRoomMessages(roomKey, () => updated).catch(console.error);
+      }
 
       // Async Gemini check on last few messages
       const recent = toGemini.slice(-3);
       for (const m of recent) {
         const isToxic = await geminiModerate(m.text);
         if (isToxic) {
-          const current = loadJSON<ChatMessage[]>(roomKey, []);
-          const after = current.map(c => c.id === m.id ? { ...c, deleted: true } : c);
+          setMessages(prev => prev.map(c => c.id === m.id ? { ...c, deleted: true } : c));
+          mutateRoomMessages(roomKey, ms => ms.map(c => c.id === m.id ? { ...c, deleted: true } : c)).catch(console.error);
           const m2 = loadJSON<string[]>(MUTE_KEY, []);
           if (!m2.includes(m.userId)) { m2.push(m.userId); saveJSON(MUTE_KEY, m2); }
-          saveJSON(roomKey, after);
-          setMessages([...after]);
         }
       }
     };
@@ -460,20 +500,21 @@ export default function Chat() {
       email: user.email, text: raw ? filterBadWords(raw) : "", imageUrl,
       timestamp: Date.now(), isAdmin: user.isAdmin,
     };
-    const all = loadJSON<ChatMessage[]>(roomKey, []);
-    all.push(msg);
-    saveJSON(roomKey, all);
-    setMessages([...all]);
+    // Optimistic update — show instantly, persist to Supabase async
+    setMessages(prev => [...prev, msg]);
     setInputText(""); setChatImgB64(null); setChatImgName("");
     setUploading(false);
     inputRef.current?.focus();
+    sendRoomMessage(roomKey, msg).catch(() => {
+      toast({ title: "فشل حفظ الرسالة، تحقق من الاتصال", variant: "destructive" });
+      setMessages(prev => prev.filter(m => m.id !== msg.id));
+    });
   }
 
   // Admin actions
   function handleDelete(msgId: string) {
-    const all = loadJSON<ChatMessage[]>(roomKey, []);
-    const updated = all.map(m => m.id === msgId ? { ...m, deleted: true } : m);
-    saveJSON(roomKey, updated); setMessages(updated);
+    setMessages(prev => prev.map(m => m.id === msgId ? { ...m, deleted: true } : m));
+    mutateRoomMessages(roomKey, msgs => msgs.map(m => m.id === msgId ? { ...m, deleted: true } : m)).catch(console.error);
   }
   function handleMute(userId: string, displayName: string) {
     const muted = getMuted();
